@@ -15,7 +15,7 @@ import numpy as np
 import torch
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from transformers import pipeline
 from ultralytics import YOLOE
 
@@ -181,21 +181,23 @@ def create_app():
 
         return dist_points
 
-    @app.get("/hello")
-    async def hello():
-        """Returns a greeting.
+    app.mount("/", StaticFiles(directory="dist"), name="static")
 
-        Returns:
-            dict: A greeting message.
-        """
-        log.warning("zzz... 1 more second...")
-        await asyncio.sleep(1)
-        log.info("...zzz... oh wha...?!")
-        return {"message": "Hello, World!"}
+    # @app.get("/hello")
+    # async def hello():
+    #     """Returns a greeting.
+    #
+    #     Returns:
+    #         dict: A greeting message.
+    #     """
+    #     log.warning("zzz... 1 more second...")
+    #     await asyncio.sleep(1)
+    #     log.info("...zzz... oh wha...?!")
+    #     return {"message": "Hello, World!"}
 
-    @app.get("/test", response_class=HTMLResponse)
-    async def test_page():
-        return TEST_PAGE_PATH.read_text(encoding="utf-8")
+    # @app.get("/test", response_class=HTMLResponse)
+    # async def test_page():
+    #     return TEST_PAGE_PATH.read_text(encoding="utf-8")
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
@@ -249,6 +251,8 @@ def create_app():
                             await websocket.send_json(
                                 {"type": "error", "error": str(exc)}
                             )
+                    case {"type": "placeholder", "data": enc_img, "text": text}:
+                        pass
                     case _:
                         log.warning("Invalid payload: %r", data)
                         await websocket.send_json(
