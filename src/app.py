@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 import torch
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from transformers import pipeline
 from ultralytics import YOLOE
@@ -35,6 +36,13 @@ def create_app():
     Creating the app within a function prevents mishaps if using multiprocessing.
     """
     app = FastAPI()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     active_websocket: WebSocket | None = None
     websocket_lock = asyncio.Lock()
     model = YOLOE(MODEL_PATH)
