@@ -1,0 +1,12 @@
+{
+  "python.terminal.activateEnvironment": true,
+  "editor.defaultFormatter": "charliermarsh.ruff",
+  "python.defaultInterpreterPath": ".venv/bin/python",
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "explicit"
+  },
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff"
+  }
+}

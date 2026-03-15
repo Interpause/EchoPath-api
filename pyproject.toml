@@ -1,0 +1,56 @@
+[tool.poetry]
+name = "py-api-template"
+version = "0.1.0"
+description = "template for python api server"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+packages = [{ include = "src" }]
+
+[tool.poetry.dependencies]
+python = "3.12.*"
+python-dotenv = ">=1.0.0,<2.0.0"
+fastapi-slim = ">=0.119.1,<1.0.0"
+uvicorn = ">=0.38.0,<1.0.0"
+uvloop = ">=0.22.1,<1.0.0"
+httptools = ">=0.7.1,<1.0.0"
+
+[tool.poetry.group.dev.dependencies]
+# Lock style version
+ruff = "0.14.6"
+poethepoet = "*"
+rich = ">=14.0.0,<15.0.0"
+
+[tool.poetry.requires-plugins]
+poetry-plugin-export = ">=1.8"
+
+[tool.poetry.group.jupyter]
+optional = true
+
+[tool.poetry.group.jupyter.dependencies]
+ipykernel = "*"
+ipympl = "*"
+ipywidgets = "*"
+
+[tool.poe.tasks]
+dev = { cmd = "python dev.py", use_exec = true }
+prod = "docker run --rm --gpus all -p 3000:3000 py-api-template:latest"
+test = "echo Not Implemented Yet!"
+publish = "echo Not Implemented Yet!"
+requirements = "poetry export -o requirements.txt --without-hashes"
+
+[tool.poe.tasks.build]
+cmd = """docker build -f Dockerfile . \
+  -t py-api-template:latest \
+  -t py-api-template:${tag} \
+"""
+args = [{ name = "tag", positional = true, required = true }]
+
+[tool.ruff.lint]
+select = ["D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
