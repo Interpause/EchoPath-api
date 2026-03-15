@@ -7,15 +7,18 @@ load_dotenv()
 import asyncio
 import base64
 import logging
+import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import cv2
 import numpy as np
 import torch
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from openai import OpenAI
 from transformers import pipeline
 from ultralytics import YOLOE
 
@@ -28,6 +31,9 @@ MODEL_IOU = 0.45
 MODEL_MAX_DET = 100
 TEST_PAGE_PATH = Path(__file__).with_name("test.html")
 OBSTACLES = ["person", "table", "chair"]
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
 
 def create_app():
@@ -51,6 +57,11 @@ def create_app():
         task="depth-estimation",
         model="depth-anything/Depth-Anything-V2-Small-hf",
         dtype=torch.float16,
+    )
+    openai_client = (
+        OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+        if OPENAI_API_KEY
+        else None
     )
 
     def decode_img(enc_img: str):
@@ -129,6 +140,39 @@ def create_app():
 
         return depth_map
 
+    def get_llm_response(enc_img: str, text: str) -> str:
+        if openai_client is None:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+
+        image_url = (
+            enc_img
+            if enc_img.startswith("data:")
+            else f"data:image/jpeg;base64,{enc_img}"
+        )
+
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            stream=False,
+            input=cast(
+                Any,
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": text},
+                            {"type": "input_image", "image_url": image_url},
+                        ],
+                    }
+                ],
+            ),
+        )
+
+        output_text = getattr(response, "output_text", None)
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text
+
+        raise ValueError("Model response did not include text output")
+
     def get_dist_points(
         detections: list[dict[str, Any]],
         segmentation_masks: list[np.ndarray],
@@ -181,8 +225,6 @@ def create_app():
 
         return dist_points
 
-    app.mount("/", StaticFiles(directory="dist"), name="static")
-
     # @app.get("/hello")
     # async def hello():
     #     """Returns a greeting.
@@ -195,9 +237,9 @@ def create_app():
     #     log.info("...zzz... oh wha...?!")
     #     return {"message": "Hello, World!"}
 
-    # @app.get("/test", response_class=HTMLResponse)
-    # async def test_page():
-    #     return TEST_PAGE_PATH.read_text(encoding="utf-8")
+    @app.get("/test", response_class=HTMLResponse)
+    async def test_page():
+        return TEST_PAGE_PATH.read_text(encoding="utf-8")
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
@@ -251,8 +293,30 @@ def create_app():
                             await websocket.send_json(
                                 {"type": "error", "error": str(exc)}
                             )
-                    case {"type": "placeholder", "data": enc_img, "text": text}:
-                        pass
+                    case {
+                        "type": "query_llm",
+                        "data": enc_img,
+                        "text": text,
+                    } if isinstance(enc_img, str) and isinstance(text, str):
+                        try:
+                            response_text = await asyncio.to_thread(
+                                get_llm_response, enc_img, text
+                            )
+                            await websocket.send_json(
+                                {"type": "query_llm_response", "data": response_text}
+                            )
+                        except (RuntimeError, ValueError) as exc:
+                            await websocket.send_json(
+                                {"type": "error", "error": str(exc)}
+                            )
+                        except Exception as exc:  # pragma: no cover
+                            log.exception("query_llm failed: %s", exc)
+                            await websocket.send_json(
+                                {
+                                    "type": "error",
+                                    "error": "Failed to query language model",
+                                }
+                            )
                     case _:
                         log.warning("Invalid payload: %r", data)
                         await websocket.send_json(
@@ -264,5 +328,7 @@ def create_app():
             async with websocket_lock:
                 if active_websocket is websocket:
                     active_websocket = None
+
+    app.mount("/", StaticFiles(directory="dist"), name="static")
 
     return app

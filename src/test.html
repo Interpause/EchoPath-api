@@ -72,6 +72,36 @@
         font-size: 0.9rem;
         opacity: 0.9;
       }
+      .llm {
+        margin-top: 12px;
+        display: grid;
+        gap: 8px;
+      }
+      .llm-row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .llm input {
+        min-width: 320px;
+        max-width: 100%;
+        flex: 1;
+        background: #1f2937;
+        color: #eee;
+        border: 1px solid #374151;
+        border-radius: 8px;
+        padding: 8px;
+      }
+      .llm pre {
+        margin: 0;
+        white-space: pre-wrap;
+        background: #0b1220;
+        border: 1px solid #1f2937;
+        border-radius: 8px;
+        padding: 10px;
+        min-height: 64px;
+      }
     </style>
   </head>
   <body>
@@ -97,6 +127,18 @@
         <canvas id="overlay"></canvas>
       </div>
       <div id="stats" class="stats">Detections: 0</div>
+      <div class="llm">
+        <div class="llm-row">
+          <input
+            id="llmPromptInput"
+            type="text"
+            value="What is in this image? Keep it short."
+            aria-label="LLM test prompt"
+          />
+          <button id="llmTestBtn" disabled>Send query_llm test</button>
+        </div>
+        <pre id="llmResponse">LLM response will appear here.</pre>
+      </div>
     </div>
 
     <script>
@@ -105,6 +147,9 @@
       const fpsInput = document.getElementById("fpsInput");
       const statusEl = document.getElementById("status");
       const statsEl = document.getElementById("stats");
+      const llmPromptInput = document.getElementById("llmPromptInput");
+      const llmTestBtn = document.getElementById("llmTestBtn");
+      const llmResponseEl = document.getElementById("llmResponse");
       const video = document.getElementById("video");
       const overlay = document.getElementById("overlay");
       const ctx = overlay.getContext("2d");
@@ -142,6 +187,39 @@
 
       function setStatus(text) {
         statusEl.textContent = text;
+      }
+
+      function captureFrameBase64() {
+        if (!video.videoWidth || !video.videoHeight) {
+          throw new Error("No camera frame available yet");
+        }
+
+        captureCanvas.width = video.videoWidth;
+        captureCanvas.height = video.videoHeight;
+        captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
+        const dataUrl = captureCanvas.toDataURL("image/jpeg", 0.7);
+        return dataUrl.split(",")[1];
+      }
+
+      function sendQueryLlmTest() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          setStatus("Connect first");
+          return;
+        }
+
+        const text = llmPromptInput.value.trim();
+        if (!text) {
+          setStatus("Enter a prompt first");
+          return;
+        }
+
+        try {
+          const base64 = captureFrameBase64();
+          llmResponseEl.textContent = "Waiting for LLM response...";
+          ws.send(JSON.stringify({ type: "query_llm", data: base64, text }));
+        } catch (err) {
+          setStatus(`LLM test failed: ${err?.message ?? err}`);
+        }
       }
 
       function resizeOverlay() {
@@ -229,6 +307,7 @@
             setStatus("Connected");
             startBtn.disabled = true;
             stopBtn.disabled = false;
+            llmTestBtn.disabled = false;
             startLoop();
           };
 
@@ -243,6 +322,11 @@
                 const pointCount = getDistPointsToRender().length;
                 statsEl.textContent = `Detections: ${latestDetections.length} | Dist points: ${pointCount}`;
                 drawDetections();
+              } else if (
+                msg.type === "query_llm_response" &&
+                typeof msg.data === "string"
+              ) {
+                llmResponseEl.textContent = msg.data;
               } else if (msg.type === "error") {
                 setStatus(`Server error: ${msg.error}`);
               }
@@ -319,6 +403,8 @@
         latestDetections = [];
         latestDistPoints = [];
         statsEl.textContent = "Detections: 0 | Dist points: 0";
+        llmTestBtn.disabled = true;
+        llmResponseEl.textContent = "LLM response will appear here.";
         drawDetections();
         startBtn.disabled = false;
         stopBtn.disabled = true;
@@ -326,6 +412,7 @@
 
       startBtn.addEventListener("click", start);
       stopBtn.addEventListener("click", stop);
+      llmTestBtn.addEventListener("click", sendQueryLlmTest);
       fpsInput.addEventListener("change", () => {
         if (ws && ws.readyState === WebSocket.OPEN) startLoop();
       });
