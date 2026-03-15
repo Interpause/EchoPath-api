@@ -7,19 +7,25 @@ load_dotenv()
 import asyncio
 import base64
 import logging
+from pathlib import Path
 
 import cv2
 import numpy as np
+import torch
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from ultralytics import YOLO
+from fastapi.responses import HTMLResponse
+from transformers import pipeline
+from ultralytics import YOLOE
 
 __all__ = ["create_app"]
 log = logging.getLogger(__name__)
 
-MODEL_PATH = "yoloe-26l-seg-pf.pt"
+MODEL_PATH = "yoloe-26m-seg.pt"
 MODEL_CONF = 0.25
 MODEL_IOU = 0.45
 MODEL_MAX_DET = 100
+TEST_PAGE_PATH = Path(__file__).with_name("test.html")
+OBSTACLES = ["person", "table", "chair"]
 
 
 def create_app():
@@ -30,20 +36,30 @@ def create_app():
     app = FastAPI()
     active_websocket: WebSocket | None = None
     websocket_lock = asyncio.Lock()
-    model = YOLO(MODEL_PATH)
+    model = YOLOE(MODEL_PATH)
+    model.set_classes(OBSTACLES)
+    depth_pipe = pipeline(
+        task="depth-estimation",
+        model="depth-anything/Depth-Anything-V2-Small-hf",
+        torch_dtype=torch.float16,
+    )
 
-    def process_image(enc_img: str):
+    def decode_img(enc_img: str):
         img_data = base64.b64decode(enc_img)
         nparr = np.frombuffer(img_data, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
             raise ValueError("Invalid jpeg")
+        return img
 
+    def detect_objects(img):
+        img = decode_img(img)
         result = model.predict(
             img,
             conf=MODEL_CONF,
             iou=MODEL_IOU,
             max_det=MODEL_MAX_DET,
+            half=True,
             verbose=False,
         )[0]
 
@@ -68,6 +84,9 @@ def create_app():
             for (x1, y1, x2, y2), cls_id, conf in zip(coords, cls_ids, confs)
         ]
 
+    def get_depth(img):
+        return depth_pipe(img)["depth"]
+
     @app.get("/hello")
     async def hello():
         """Returns a greeting.
@@ -79,6 +98,10 @@ def create_app():
         await asyncio.sleep(1)
         log.info("...zzz... oh wha...?!")
         return {"message": "Hello, World!"}
+
+    @app.get("/test", response_class=HTMLResponse)
+    async def test_page():
+        return TEST_PAGE_PATH.read_text(encoding="utf-8")
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
@@ -105,7 +128,11 @@ def create_app():
                 match data:
                     case {"type": "image", "data": enc_img} if isinstance(enc_img, str):
                         try:
-                            detections = process_image(enc_img)
+                            detections, depth_map = await asyncio.gather(
+                                asyncio.to_thread(detect_objects, enc_img),
+                                asyncio.to_thread(get_depth, enc_img),
+                            )
+
                             await websocket.send_json(
                                 {"type": "detections", "data": detections}
                             )

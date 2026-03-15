@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EchoPath WS Test</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        font-family:
+          system-ui,
+          -apple-system,
+          Segoe UI,
+          Roboto,
+          sans-serif;
+        background: #111;
+        color: #eee;
+      }
+      .wrap {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 1.2rem;
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin: 10px 0 14px;
+        flex-wrap: wrap;
+      }
+      button {
+        border: 0;
+        background: #2563eb;
+        color: white;
+        padding: 8px 12px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      button[disabled] {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .status {
+        font-size: 0.9rem;
+        opacity: 0.9;
+      }
+      .stage {
+        position: relative;
+        width: 100%;
+        aspect-ratio: 16/9;
+        background: black;
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      video,
+      canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      .stats {
+        margin-top: 8px;
+        font-size: 0.9rem;
+        opacity: 0.9;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>EchoPath WebSocket Webcam Test</h1>
+      <div class="controls">
+        <button id="startBtn">Start camera + WS</button>
+        <button id="stopBtn" disabled>Stop</button>
+        <label
+          >FPS:
+          <input
+            id="fpsInput"
+            type="number"
+            min="1"
+            max="30"
+            value="5"
+            style="width: 72px"
+        /></label>
+        <span id="status" class="status">Idle</span>
+      </div>
+      <div class="stage">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+      </div>
+      <div id="stats" class="stats">Detections: 0</div>
+    </div>
+
+    <script>
+      const startBtn = document.getElementById("startBtn");
+      const stopBtn = document.getElementById("stopBtn");
+      const fpsInput = document.getElementById("fpsInput");
+      const statusEl = document.getElementById("status");
+      const statsEl = document.getElementById("stats");
+      const video = document.getElementById("video");
+      const overlay = document.getElementById("overlay");
+      const ctx = overlay.getContext("2d");
+
+      const captureCanvas = document.createElement("canvas");
+      const captureCtx = captureCanvas.getContext("2d");
+
+      let ws = null;
+      let stream = null;
+      let timer = null;
+      let latestDetections = [];
+
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      function resizeOverlay() {
+        const rect = video.getBoundingClientRect();
+        overlay.width = Math.max(1, Math.floor(rect.width));
+        overlay.height = Math.max(1, Math.floor(rect.height));
+        drawDetections();
+      }
+
+      function drawDetections() {
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+        ctx.lineWidth = 2;
+        ctx.font = "14px system-ui, sans-serif";
+
+        for (const d of latestDetections) {
+          const x = d.xmin * overlay.width;
+          const y = d.ymin * overlay.height;
+          const w = (d.xmax - d.xmin) * overlay.width;
+          const h = (d.ymax - d.ymin) * overlay.height;
+          const label = d.label ?? "obj";
+          const conf =
+            typeof d.confidence === "number" ? d.confidence.toFixed(2) : "";
+
+          ctx.strokeStyle = "#22c55e";
+          ctx.strokeRect(x, y, w, h);
+
+          const text = conf ? `${label} ${conf}` : String(label);
+          const pad = 4;
+          const tw = ctx.measureText(text).width;
+          const th = 16;
+          ctx.fillStyle = "#22c55e";
+          ctx.fillRect(x, Math.max(0, y - th), tw + pad * 2, th);
+          ctx.fillStyle = "#111";
+          ctx.fillText(text, x + pad, Math.max(12, y - 4));
+        }
+      }
+
+      async function start() {
+        try {
+          setStatus("Opening camera...");
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "environment" },
+            audio: false,
+          });
+          video.srcObject = stream;
+          await video.play();
+
+          resizeOverlay();
+          window.addEventListener("resize", resizeOverlay);
+
+          const wsProto = location.protocol === "https:" ? "wss" : "ws";
+          ws = new WebSocket(`${wsProto}://${location.host}/ws`);
+
+          ws.onopen = () => {
+            setStatus("Connected");
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            startLoop();
+          };
+
+          ws.onmessage = (event) => {
+            try {
+              const msg = JSON.parse(event.data);
+              if (msg.type === "detections" && Array.isArray(msg.data)) {
+                latestDetections = msg.data;
+                statsEl.textContent = `Detections: ${latestDetections.length}`;
+                drawDetections();
+              } else if (msg.type === "error") {
+                setStatus(`Server error: ${msg.error}`);
+              }
+            } catch {
+              setStatus("Received non-JSON message");
+            }
+          };
+
+          ws.onclose = (event) => {
+            if (event.code === 1000 && event.reason) {
+              setStatus(`Closed: ${event.reason}`);
+            } else {
+              setStatus("Disconnected");
+            }
+            stop();
+          };
+
+          ws.onerror = () => {
+            setStatus("WebSocket error");
+          };
+        } catch (err) {
+          setStatus(`Failed: ${err?.message ?? err}`);
+          stop();
+        }
+      }
+
+      function startLoop() {
+        const fps = Math.max(1, Math.min(30, Number(fpsInput.value) || 5));
+        const interval = Math.floor(1000 / fps);
+
+        if (timer) clearInterval(timer);
+        timer = setInterval(() => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          if (!video.videoWidth || !video.videoHeight) return;
+
+          captureCanvas.width = video.videoWidth;
+          captureCanvas.height = video.videoHeight;
+          captureCtx.drawImage(
+            video,
+            0,
+            0,
+            captureCanvas.width,
+            captureCanvas.height,
+          );
+
+          const dataUrl = captureCanvas.toDataURL("image/jpeg", 0.7);
+          const base64 = dataUrl.split(",")[1];
+          ws.send(JSON.stringify({ type: "image", data: base64 }));
+        }, interval);
+      }
+
+      function stop() {
+        if (timer) {
+          clearInterval(timer);
+          timer = null;
+        }
+
+        if (ws) {
+          const s = ws;
+          ws = null;
+          if (
+            s.readyState === WebSocket.OPEN ||
+            s.readyState === WebSocket.CONNECTING
+          ) {
+            s.close();
+          }
+        }
+
+        if (stream) {
+          for (const track of stream.getTracks()) track.stop();
+          stream = null;
+        }
+
+        latestDetections = [];
+        statsEl.textContent = "Detections: 0";
+        drawDetections();
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+
+      startBtn.addEventListener("click", start);
+      stopBtn.addEventListener("click", stop);
+      fpsInput.addEventListener("change", () => {
+        if (ws && ws.readyState === WebSocket.OPEN) startLoop();
+      });
+    </script>
+  </body>
+</html>
